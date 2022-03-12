@@ -18,9 +18,8 @@ limitations under the License.
 package main
 
 import (
+	"github.com/devops-at-home/nomad-driver-containerd/containerd"
 	log "github.com/hashicorp/go-hclog"
-
-	"github.com/Roblox/nomad-driver-containerd/containerd"
 
 	"github.com/hashicorp/nomad/plugins"
 
