@@ -19,7 +19,9 @@ package containerd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -30,8 +32,12 @@ import (
 	"github.com/containerd/containerd/oci"
 	refdocker "github.com/containerd/containerd/reference/docker"
 	remotesdocker "github.com/containerd/containerd/remotes/docker"
+	"github.com/docker/distribution/reference"
+	"github.com/docker/docker/registry"
 	"github.com/docker/go-units"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+
+	docker "github.com/fsouza/go-dockerclient"
 )
 
 type ContainerConfig struct {
@@ -68,12 +74,21 @@ func (d *Driver) getContainerdVersion() (containerd.Version, error) {
 
 type CredentialsOpt func(string) (string, string, error)
 
-func (d *Driver) parshAuth(auth *RegistryAuth) CredentialsOpt {
+func (d *Driver) parshAuth(auth *RegistryAuth, repo string) CredentialsOpt {
 	return func(string) (string, string, error) {
 		var username, password string
 		if d.config.Auth.Username != "" && d.config.Auth.Password != "" {
 			username = d.config.Auth.Username
 			password = d.config.Auth.Password
+		}
+
+		if d.config.AuthHelper != "" {
+			auth, err := authFromHelper(d.config.AuthHelper, repo)
+			if err != nil {
+				return "", "", err
+			}
+			username = auth.Username
+			password = auth.Password
 		}
 
 		// Job auth will take precedence over plugin auth options.
@@ -109,7 +124,7 @@ func (d *Driver) pullImage(imageName, imagePullTimeout string, auth *RegistryAut
 
 	pullOpts := []containerd.RemoteOpt{
 		containerd.WithPullUnpack,
-		withResolver(d.parshAuth(auth)),
+		withResolver(d.parshAuth(auth, named.String())),
 	}
 
 	return d.client.Pull(ctxWithTimeout, named.String(), pullOpts...)
@@ -374,4 +389,74 @@ func (d *Driver) getTask(container containerd.Container, stdoutPath, stderrPath 
 	defer cancel()
 
 	return container.Task(ctxWithTimeout, cio.NewAttach(cio.WithStreams(nil, stdout, stderr)))
+}
+
+// authFromHelper generates an authBackend for a docker-credentials-helper;
+// A script taking the requested domain on input, outputting JSON with
+// "Username" and "Secret"
+func authFromHelper(helperName, repo string) (*docker.AuthConfiguration, error) {
+	if helperName == "" {
+		return nil, nil
+	}
+	helper := dockerAuthHelperPrefix + helperName
+	cmd := exec.Command(helper, "get")
+
+	repoInfo, err := parseRepositoryInfo(repo)
+	if err != nil {
+		return nil, err
+	}
+
+	cmd.Stdin = strings.NewReader(repoInfo.Index.Name)
+
+	output, err := cmd.Output()
+	if err != nil {
+		exitErr, ok := err.(*exec.ExitError)
+		if ok {
+			return nil, fmt.Errorf(
+				"%s with input %q failed with stderr: %s, output: %s", helper, repoInfo.Index.Name, exitErr.Stderr, string(output))
+		}
+		return nil, err
+	}
+
+	var response map[string]string
+	if err := json.Unmarshal(output, &response); err != nil {
+		return nil, err
+	}
+
+	auth := &docker.AuthConfiguration{
+		Username: response["Username"],
+		Password: response["Secret"],
+	}
+
+	if authIsEmpty(auth) {
+		return nil, nil
+	}
+	return auth, nil
+}
+
+// parseRepositoryInfo takes a repo and returns the Docker RepositoryInfo. This
+// is useful for interacting with a Docker config object.
+func parseRepositoryInfo(repo string) (*registry.RepositoryInfo, error) {
+	name, err := reference.ParseNormalizedNamed(repo)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to parse named repo %q: %v", repo, err)
+	}
+
+	repoInfo, err := registry.ParseRepositoryInfo(name)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to parse repository: %v", err)
+	}
+
+	return repoInfo, nil
+}
+
+// authIsEmpty returns if auth is nil or an empty structure
+func authIsEmpty(auth *docker.AuthConfiguration) bool {
+	if auth == nil {
+		return false
+	}
+	return auth.Username == "" &&
+		auth.Password == "" &&
+		auth.Email == "" &&
+		auth.ServerAddress == ""
 }

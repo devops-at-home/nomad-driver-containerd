@@ -58,6 +58,10 @@ const (
 	// this is used to allow modification and migration of the task schema
 	// used by the plugin
 	taskHandleVersion = 1
+
+	// dockerAuthHelperPrefix is the prefix to attach to the credential helper
+	// and should be found in the $PATH. Example: ${prefix-}${helper-name}
+	dockerAuthHelperPrefix = "docker-credential-"
 )
 
 var (
@@ -88,6 +92,7 @@ var (
 			"username": hclspec.NewAttr("username", "string", true),
 			"password": hclspec.NewAttr("password", "string", true),
 		})),
+		"auth_helper": hclspec.NewAttr("auth_helper", "string", false),
 	})
 
 	// taskConfigSpec is the specification of the plugin's configuration for
@@ -155,6 +160,7 @@ type Config struct {
 	StatsInterval     string       `codec:"stats_interval"`
 	AllowPrivileged   bool         `codec:"allow_privileged"`
 	Auth              RegistryAuth `codec:"auth"`
+	AuthHelper        string       `codec:"auth_helper"`
 }
 
 // Volume, bind, and tmpfs type mounts are supported.
